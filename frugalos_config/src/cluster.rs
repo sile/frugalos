@@ -101,7 +101,12 @@ pub fn make_rlog<P: AsRef<Path>, S: Spawn + Clone + Send + 'static>(
         .into_iter()
         .map(|s| server_to_frugalos_raft_node(&s).to_raft_node_id())
         .collect();
-    let rlog = ReplicatedLog::new(node.to_raft_node_id(), members, io);
+    let rlog = track!(ReplicatedLog::new(
+        node.to_raft_node_id(),
+        members,
+        io,
+        &Default::default() // TODO
+    ))?;
     Ok((device, rlog))
 }
 
