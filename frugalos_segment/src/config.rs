@@ -50,7 +50,7 @@ pub struct CannyLsClientConfig {
     )]
     pub device_max_queue_len: usize,
 
-    /// The max length of a RPC request queue.
+    /// The max length of an RPC request queue.
     #[serde(
         rename = "cannyls_rpc_max_queue_len",
         default = "default_cannyls_rpc_max_queue_len"
@@ -59,7 +59,7 @@ pub struct CannyLsClientConfig {
 }
 
 impl CannyLsClientConfig {
-    /// Returns a RPC option.
+    /// Returns an RPC option.
     pub fn rpc_options(&self) -> RpcOptions {
         RpcOptions {
             max_queue_len: Some(self.rpc_max_queue_len),
@@ -85,6 +85,39 @@ fn default_cannyls_rpc_max_queue_len() -> u64 {
     512
 }
 
+/// Timeout policy for MDS requests.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum MdsRequestPolicy {
+    /// Sends a request to MDS conservatively.
+    ///
+    /// Requests for MDS will not time out. Also, an algorithm for selecting a leader candidate
+    /// when the leader is indeterminate becomes random.
+    Conservative,
+    /// Sends a request to MDS speculatively.
+    ///
+    /// The request for MDS times out at the specified time.
+    /// The timeout time for each request increases to exponential according to the value specified
+    /// in the configuration and the number of failures.
+    /// Also, an algorithm for selecting a leader candidate when the leader is indeterminate becomes
+    /// round robin.
+    Speculative {
+        /// Timeout before aborting a request.
+        #[serde(
+            rename = "timeout_millis",
+            default = "default_mds_client_request_timeout",
+            with = "frugalos_core::serde_ext::duration_millis"
+        )]
+        timeout: Duration,
+    },
+}
+
+impl Default for MdsRequestPolicy {
+    fn default() -> Self {
+        MdsRequestPolicy::Conservative
+    }
+}
+
 /// Configuration for `MdsClient`.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MdsClientConfig {
@@ -94,6 +127,22 @@ pub struct MdsClientConfig {
         default = "default_mds_client_put_content_timeout"
     )]
     pub put_content_timeout: Seconds,
+
+    /// Default Request policy for mds requests.
+    #[serde(default)]
+    pub default_request_policy: MdsRequestPolicy,
+
+    /// Request policy for mds get requests.
+    #[serde(default)]
+    pub get_request_policy: MdsRequestPolicy,
+
+    /// Request policy for mds head requests.
+    #[serde(default)]
+    pub head_request_policy: MdsRequestPolicy,
+}
+
+fn default_mds_client_request_timeout() -> Duration {
+    Duration::from_secs(1)
 }
 
 impl Default for MdsClientConfig {
@@ -101,6 +150,9 @@ impl Default for MdsClientConfig {
         MdsClientConfig {
             // This default value is a heuristic.
             put_content_timeout: default_mds_client_put_content_timeout(),
+            default_request_policy: Default::default(),
+            get_request_policy: Default::default(),
+            head_request_policy: Default::default(),
         }
     }
 }
@@ -372,10 +424,7 @@ mod tests {
         let fragments = 3;
         let version = ObjectVersion(1);
         let cluster = make_cluster(cluster_size);
-        let candidates = cluster
-            .candidates(version.clone())
-            .cloned()
-            .collect::<Vec<_>>();
+        let candidates = cluster.candidates(version).cloned().collect::<Vec<_>>();
         let participants = Participants::dispersed(&candidates, fragments);
 
         let matrix = vec![
@@ -389,7 +438,7 @@ mod tests {
         assert_eq!(participants.len(), fragments as usize);
 
         for (i, device, is_participant) in matrix {
-            let member = candidates.get(i as usize).unwrap();
+            let member = &candidates[i as usize];
 
             assert_eq!(member.device, device);
             assert_eq!(
@@ -406,7 +455,7 @@ mod tests {
         ];
 
         for (i, expected_spares) in matrix {
-            let node_id = candidates.get(i).unwrap().node;
+            let node_id = candidates[i].node;
 
             assert_eq!(
                 expected_spares,

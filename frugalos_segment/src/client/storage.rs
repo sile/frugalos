@@ -9,6 +9,7 @@ use ecpool::liberasurecode::LibErasureCoderBuilder;
 use ecpool::ErasureCoderPool;
 use fibers::time::timer;
 use fibers_rpc::client::ClientServiceHandle as RpcServiceHandle;
+use frugalos_core::tracer::SpanExt;
 use frugalos_raft::NodeId;
 use futures::future;
 use futures::{self, Async, Future, Poll};
@@ -572,10 +573,7 @@ impl Future for DispersedPut {
                                     .map_err(|e| track!(Error::from(e)))
                                     .then(move |result| {
                                         if let Err(ref e) = result {
-                                            span.set_tag(StdTag::error);
-                                            span.log(|log| {
-                                                log.error().message(e.to_string());
-                                            });
+                                            span.log_error(e);
                                         }
                                         result
                                     }),
@@ -718,11 +716,7 @@ impl CollectFragments {
                 .get_lump(DeviceId::new(m.device), lump_id)
                 .then(move |result| {
                     if let Err(ref e) = result {
-                        span.set_tag(StdTag::error);
-                        span.log(|log| {
-                            let kind = format!("{:?}", e.kind());
-                            log.error().kind(kind).message(e.to_string());
-                        });
+                        span.log_error(e);
                     }
                     result
                 });
@@ -901,7 +895,7 @@ mod tests {
         version: ObjectVersion,
     ) -> usize {
         config
-            .candidates(version.clone())
+            .candidates(version)
             .position(|candidate| *candidate == member)
             .unwrap()
     }
@@ -970,8 +964,8 @@ mod tests {
         let version = ObjectVersion(1);
         let expected = vec![0x03];
 
-        let _ = wait(storage_client.clone().put(
-            version.clone(),
+        wait(storage_client.clone().put(
+            version,
             expected.clone(),
             Deadline::Infinity,
             Span::inactive().handle(),
@@ -1012,25 +1006,21 @@ mod tests {
                     node: node_id,
                     device: device_id.clone()
                 },
-                version.clone()
+                version
             ) < system.fragments() as usize
         );
 
-        let _ = wait(storage_client.clone().put(
-            version.clone(),
+        wait(storage_client.clone().put(
+            version,
             expected.clone(),
             Deadline::Infinity,
             Span::inactive().handle(),
         ))?;
 
-        let result = wait(
-            storage_client
-                .clone()
-                .get_fragment(node_id.clone(), version.clone()),
-        )?;
+        let result = wait(storage_client.clone().get_fragment(node_id, version))?;
 
         if let MaybeFragment::Fragment(content) = result {
-            assert!(content.len() > 0);
+            assert!(!content.is_empty());
             return Ok(());
         }
 
@@ -1063,22 +1053,18 @@ mod tests {
                     node: node_id,
                     device: device_id.clone()
                 },
-                version.clone()
+                version
             ) >= system.fragments() as usize
         );
 
-        let _ = wait(storage_client.clone().put(
-            version.clone(),
+        wait(storage_client.clone().put(
+            version,
             expected.clone(),
             Deadline::Infinity,
             Span::inactive().handle(),
         ))?;
 
-        let result = wait(
-            storage_client
-                .clone()
-                .get_fragment(node_id.clone(), version.clone()),
-        )?;
+        let result = wait(storage_client.clone().get_fragment(node_id, version))?;
 
         assert_eq!(result, MaybeFragment::NotParticipant);
 

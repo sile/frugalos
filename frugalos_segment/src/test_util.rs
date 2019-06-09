@@ -12,6 +12,7 @@ pub mod tests {
     use fibers_global;
     use fibers_rpc::client::{ClientService, ClientServiceHandle};
     use fibers_rpc::server::ServerBuilder;
+    use frugalos_core;
     use frugalos_mds;
     use frugalos_raft::{self, LocalNodeId, NodeId};
     use futures;
@@ -41,6 +42,7 @@ pub mod tests {
     /// Make a frugalos segment where there are `segment_size`-nodes.
     ///
     /// This method needs `segment_size >= system.fragments()`.
+    #[allow(clippy::type_complexity)]
     pub fn setup_system(
         system: &mut System,
         segment_size: usize,
@@ -97,6 +99,7 @@ pub mod tests {
                 &mut rpc_server_builder,
                 raft_service_handle,
                 frugalos_mds::FrugalosMdsConfig::default(),
+                frugalos_core::tracer::make_null_tracer(),
             )?;
             let service_handle = service.handle();
             let device_registry_handle = service.device_registry().handle();
@@ -139,10 +142,7 @@ pub mod tests {
         }
 
         /// Registers all the nodes in the `members`.
-        fn register_nodes(
-            &mut self,
-            members: &Vec<(NodeId, DeviceId, DeviceHandle)>,
-        ) -> Result<()> {
+        fn register_nodes(&mut self, members: &[(NodeId, DeviceId, DeviceHandle)]) -> Result<()> {
             let cluster: ClusterMembers = self
                 .cluster_config
                 .members
@@ -168,6 +168,7 @@ pub mod tests {
         }
 
         /// Boots this cluster with the given members.
+        #[allow(clippy::needless_pass_by_value)]
         pub fn boot(&mut self, members: Vec<(NodeId, DeviceId, DeviceHandle)>) -> Result<Client> {
             // at least one cluster member is required
             if members.is_empty() {
@@ -176,7 +177,7 @@ pub mod tests {
 
             for member in &members {
                 self.cluster_config.members.push(ClusterMember {
-                    node: member.0.clone(),
+                    node: member.0,
                     device: member.1.clone(),
                 });
             }

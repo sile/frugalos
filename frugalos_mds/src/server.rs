@@ -1,9 +1,13 @@
 use fibers_rpc::server::{
     HandleCall, HandleCast, NoReply, Reply, ServerBuilder as RpcServerBuilder,
 };
+use frugalos_core::tracer::{SpanExt, ThreadLocalTracer};
 use frugalos_raft::LocalNodeId;
 use futures::Future;
 use libfrugalos::schema::mds as rpc;
+use rustracing::tag::{StdTag, Tag};
+use rustracing_jaeger::span::Span;
+use std::time::Instant;
 use trackable::error::ErrorKindExt;
 
 use error::to_rpc_error;
@@ -28,13 +32,29 @@ macro_rules! rpc_cast_try {
     };
 }
 
+fn with_trace<T>(
+    mut span: Span,
+) -> impl FnOnce(Result<T>) -> std::result::Result<T, libfrugalos::Error> {
+    |result| {
+        result.map_err(move |e| {
+            span.log_error(&e);
+            track!(to_rpc_error(e))
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Server {
     service: ServiceHandle,
+    tracer: ThreadLocalTracer,
 }
 impl Server {
-    pub fn register(service: ServiceHandle, builder: &mut RpcServerBuilder) {
-        let this = Server { service };
+    pub fn register(
+        service: ServiceHandle,
+        builder: &mut RpcServerBuilder,
+        tracer: ThreadLocalTracer,
+    ) {
+        let this = Server { service, tracer };
         builder.add_cast_handler::<rpc::RecommendToLeaderRpc, _>(this.clone());
         builder.add_call_handler::<rpc::GetLeaderRpc, _>(this.clone());
         builder.add_call_handler::<rpc::ListObjectsRpc, _>(this.clone());
@@ -58,6 +78,14 @@ impl Server {
             node
         )
     }
+
+    fn start_span(&self, operation: &'static str) -> Span {
+        self.tracer.span(|t| {
+            t.span(operation)
+                .tag(StdTag::component(module_path!()))
+                .start()
+        })
+    }
 }
 impl HandleCast<rpc::RecommendToLeaderRpc> for Server {
     fn handle_cast(&self, node_id: String) -> NoReply {
@@ -72,7 +100,13 @@ impl HandleCall<rpc::GetLeaderRpc> for Server {
     fn handle_call(&self, node_id: String) -> Reply<rpc::GetLeaderRpc> {
         let node_id = rpc_try!(node_id.parse().map_err(Error::from));
         let node = rpc_try!(self.get_node(node_id));
-        Reply::future(node.get_leader().map_err(to_rpc_error).then(Ok))
+        let mut span = self.start_span("mds_get_leader_rpc");
+        span.set_tag(|| Tag::new("node_id", node_id.to_string()));
+        Reply::future(
+            node.get_leader(Instant::now())
+                .then(with_trace(span))
+                .then(Ok),
+        )
     }
 }
 impl HandleCall<rpc::ListObjectsRpc> for Server {
@@ -104,7 +138,7 @@ impl HandleCall<rpc::GetObjectRpc> for Server {
         let node_id = rpc_try!(request.node_id.parse().map_err(Error::from));
         let node = rpc_try!(self.get_node(node_id));
         Reply::future(
-            node.get_object(request.object_id, request.expect)
+            node.get_object(request.object_id, request.expect, Instant::now())
                 .map_err(to_rpc_error)
                 .then(Ok),
         )
@@ -131,6 +165,7 @@ impl HandleCall<rpc::PutObjectRpc> for Server {
                 request.metadata,
                 request.expect,
                 request.put_content_timeout.into(),
+                Instant::now(),
             )
             .map_err(to_rpc_error)
             .then(Ok),
@@ -142,7 +177,7 @@ impl HandleCall<rpc::DeleteObjectRpc> for Server {
         let node_id = rpc_try!(request.node_id.parse().map_err(Error::from));
         let node = rpc_try!(self.get_node(node_id));
         Reply::future(
-            node.delete_object(request.object_id, request.expect)
+            node.delete_object(request.object_id, request.expect, Instant::now())
                 .map_err(to_rpc_error)
                 .then(Ok),
         )

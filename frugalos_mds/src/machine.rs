@@ -94,8 +94,6 @@ impl Machine {
         &mut self,
         object_version: ObjectVersion,
     ) -> Result<Option<ObjectVersion>> {
-        use std::string::String;
-
         let owner_id: Option<Vec<u8>> = self
             .id_to_version
             .iter()
@@ -216,6 +214,7 @@ mod tests {
     }
 
     fn make_object_id(id: usize, kind: MetadataKind) -> ObjectId {
+        #[allow(clippy::identity_conversion)]
         match kind {
             MetadataKind::MUSIC => ObjectId::from(format!("music:metadata:{}", id)),
             MetadataKind::LYRIC => ObjectId::from(format!("lyric:metadata:{}", id)),
